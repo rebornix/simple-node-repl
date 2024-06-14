@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as REPL from 'repl';
 import { Writable, Readable } from 'stream';
+import * as vm from 'vm';
 
 export function activate(context: vscode.ExtensionContext) {
 	const controller = vscode.notebooks.createNotebookController('nodeREPL', 'interactive', 'Node REPL');
@@ -11,13 +12,11 @@ export function activate(context: vscode.ExtensionContext) {
 		read: () => { }
 	});
 
-	let replOutput = '';
 	const outputStream = new Writable({
-		write: (chunk, encoding, callback) => {
-			replOutput += chunk.toString();
-			callback();
-		}
+		write: (chunk, encoding, callback) => { callback(); }
 	});
+
+	let customEval = (cmd: any, context: any, filename: any, callback: any) => { };
 
 	let replServer: REPL.REPLServer | undefined;
 	inputStream.push('');
@@ -25,34 +24,43 @@ export function activate(context: vscode.ExtensionContext) {
 		prompt: '',
 		input: inputStream,
 		output: outputStream,
+		eval: (cmd, context, filename, callback) => {
+			customEval(cmd, context, filename, callback);
+		},
 		terminal: false
 	});
+
+	const vmContext = vm.createContext();
 
 	controller.executeHandler = async (cells: vscode.NotebookCell[], _notebook, _controller) => {
 		for (const cell of cells) {
 			const exec = controller.createNotebookCellExecution(cell);
-            exec.start(Date.now());
-			
+			exec.start(Date.now());
+
 			const code = cell.document.getText();
-			replOutput = '';
-			
+			let replOutput = '';
+
 			await new Promise<void>((resolve) => {
-				const originalWrite = outputStream._write;
-				
-				outputStream._write = (chunk, encoding, callback) => {
-					replOutput += chunk.toString();
-					callback();
-					// Once done, resolve the promise
-					outputStream._write = originalWrite;
+				customEval = (cmd: any, context: any, filename: any, callback: any) => {
+					let result;
+					try {
+						result = vm.runInContext(cmd, vmContext);
+					} catch (e) {
+						callback(e);
+						resolve();
+					}
+
+					callback(null, result);
+					replOutput = result;
 					resolve();
 				};
-				
+
 				inputStream.push(code + '\n');
 			});
 
 			exec.replaceOutput([
 				new vscode.NotebookCellOutput([
-					vscode.NotebookCellOutputItem.text(replOutput.trim(), 'text/plain')
+					vscode.NotebookCellOutputItem.text(replOutput, 'text/plain')
 				])
 			]);
 
@@ -69,7 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
 				'interactive.open',
 				{
 					preserveFocus: true,
-					viewColumn: vscode.ViewColumn.Active,
+					viewColumn: vscode.ViewColumn.Beside,
 				},
 				undefined,
 				controller.id,
@@ -78,11 +86,11 @@ export function activate(context: vscode.ExtensionContext) {
 			notebookEditor = interactiveWindowObject.notebookEditor;
 			notebookDocument = interactiveWindowObject.notebookEditor.notebook;
 		}
-		
+
 		if (notebookEditor && notebookDocument) {
 			await vscode.window.showNotebookDocument(notebookDocument, { viewColumn: vscode.ViewColumn.Beside });
 			controller.updateNotebookAffinity(notebookDocument, vscode.NotebookControllerAffinity.Default);
-	
+
 			await vscode.commands.executeCommand('notebook.selectKernel', {
 				notebookEditor,
 				id: controller.id,
@@ -93,4 +101,4 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 // This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate() { }
